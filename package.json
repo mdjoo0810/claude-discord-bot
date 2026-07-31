@@ -1,0 +1,32 @@
+{
+  "name": "claude-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that runs Claude Code sessions — one thread per session",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "register": "tsx scripts/register-commands.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "probe": "tsx scripts/probe-sdk.ts",
+    "statusline": "tsx scripts/preview-statusline.ts",
+    "typecheck": "tsc --noEmit",
+    "service:install": "bash scripts/install-launchd.sh",
+    "service:uninstall": "launchctl bootout gui/$(id -u)/com.myeongdonjoo.claude-discord-bot",
+    "service:logs": "tail -f logs/bot.out.log"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "better-sqlite3": "^13.0.2",
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}
