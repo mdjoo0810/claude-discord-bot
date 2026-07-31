@@ -9,7 +9,7 @@ import {
 } from 'discord.js';
 import { config } from './config.js';
 import { store } from './db.js';
-import { describeTool, formatDuration, truncate } from './format.js';
+import { describeTool, truncate } from './format.js';
 import { log } from './log.js';
 import { decide } from './policy.js';
 import type { Presenter } from './presenter.js';
@@ -43,7 +43,7 @@ export function createCanUseTool(ctx: PermissionContext): CanUseTool {
     }
 
     if (decision.action === 'deny') {
-      await ctx.presenter.postNotice(`⛔ **차단됨** — ${decision.reason}\n${describeTool(toolName, input)}`);
+      await ctx.presenter.postNotice(`⛔ ${describeTool(toolName, input)} · 차단됨 (${decision.reason})`);
       return { behavior: 'deny', message: `호스트 정책에 의해 차단되었습니다: ${decision.reason}` };
     }
 
@@ -79,15 +79,8 @@ async function askUser(
     new ButtonBuilder().setCustomId(ids.stop).setLabel('거부하고 중단').setStyle(ButtonStyle.Danger),
   );
 
-  const body = [
-    `🔐 **승인 필요** — ${options.title ?? options.displayName ?? decision.reason}`,
-    describeTool(toolName, input),
-    renderInput(toolName, input),
-    options.description ? `-# ${truncate(options.description, 200)}` : undefined,
-    `-# "항상 허용" → ${decision.ruleLabel} · ${formatDuration(config.runtime.approvalTimeoutMs)} 내 미응답 시 자동 거부`,
-  ]
-    .filter(Boolean)
-    .join('\n');
+  // 진행 상황 메시지를 가리지 않도록 한 줄로 유지합니다.
+  const body = `🔐 ${compactRequest(toolName, input)}`;
 
   let message: Message;
   try {
@@ -97,6 +90,9 @@ async function askUser(
     return { behavior: 'deny', message: '승인 요청을 사용자에게 전달하지 못했습니다.' };
   }
 
+  // 승인 요청이 올라갔으니 진행 메시지는 아래로 내려야 합니다.
+  // 다만 대기 중에는 버튼이 맨 아래에 있어야 하므로 재배치는 승인 이후로 미뤄집니다.
+  ctx.presenter.markDisplaced();
   ctx.presenter.setWaiting(`${toolName} 승인 대기`);
 
   try {
@@ -110,22 +106,21 @@ async function askUser(
     ]);
 
     if (interaction === 'aborted') {
-      await safeEdit(message, `🛑 **중단됨** — 실행이 취소되어 승인 요청이 만료되었습니다.\n${describeTool(toolName, input)}`);
+      await safeEdit(message, `🛑 ${describeTool(toolName, input)} · 실행 취소로 만료`);
       return { behavior: 'deny', message: '사용자가 실행을 중단했습니다.' };
     }
 
     const action = interaction.customId.split(':')[2];
-    const who = interaction.user.displayName ?? interaction.user.username;
 
     if (action === 'allow' || action === 'always') {
       if (action === 'always') {
         ctx.rules.add(decision.rule);
         store.addRule(ctx.threadId, decision.rule);
       }
+      // 결정 후에는 한 줄만 남깁니다.
       await interaction.update({
         content: truncate2000(
-          `✅ **${action === 'always' ? '항상 허용' : '허용'}** (${who})\n${describeTool(toolName, input)}` +
-            (action === 'always' ? `\n-# 규칙 저장: ${decision.ruleLabel}` : ''),
+          `✅ ${describeTool(toolName, input)}${action === 'always' ? ' · 이후 자동 허용' : ''}`,
         ),
         components: [],
       });
@@ -136,7 +131,7 @@ async function askUser(
     const stopping = action === 'stop';
     await interaction.update({
       content: truncate2000(
-        `🚫 **${stopping ? '거부하고 중단' : '거부'}** (${who})\n${describeTool(toolName, input)}`,
+        `🚫 ${describeTool(toolName, input)}${stopping ? ' · 실행 중단' : ''}`,
       ),
       components: [],
     });
@@ -151,10 +146,7 @@ async function askUser(
     };
   } catch {
     // awaitMessageComponent 는 타임아웃 시 예외를 던집니다.
-    await safeEdit(
-      message,
-      `⌛ **시간 초과로 자동 거부** — ${formatDuration(config.runtime.approvalTimeoutMs)} 동안 응답이 없었습니다.\n${describeTool(toolName, input)}`,
-    );
+    await safeEdit(message, `⌛ ${describeTool(toolName, input)} · 시간 초과로 자동 거부`);
     ctx.presenter.setRunning();
     return {
       behavior: 'deny',
@@ -181,18 +173,16 @@ async function safeEdit(message: Message, content: string): Promise<void> {
   }
 }
 
-function renderInput(toolName: string, input: Record<string, unknown>): string {
+/**
+ * 승인 요청을 한 줄로 렌더링합니다.
+ * 판단에 필요한 정보(주로 셸 명령 전문)는 남기되 코드 블록은 쓰지 않습니다.
+ */
+function compactRequest(toolName: string, input: Record<string, unknown>): string {
   if (toolName === 'Bash' && typeof input['command'] === 'string') {
-    return codeBlock(input['command'] as string, 'bash');
+    const command = (input['command'] as string).replace(/\s+/g, ' ').trim();
+    return `\`${truncate(command, 300)}\` 실행할까요?`;
   }
-  const json = JSON.stringify(input, null, 2);
-  if (!json || json === '{}') return '';
-  return codeBlock(json, 'json');
-}
-
-function codeBlock(text: string, lang: string): string {
-  const body = text.length > 900 ? `${text.slice(0, 900)}\n…(생략)` : text;
-  return `\`\`\`${lang}\n${body.replace(/```/g, '`​``')}\n\`\`\``;
+  return `${describeTool(toolName, input)} — 승인할까요?`;
 }
 
 function truncate2000(text: string): string {

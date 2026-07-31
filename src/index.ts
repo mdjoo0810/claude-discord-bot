@@ -80,13 +80,24 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 async function onMessage(message: Message): Promise<void> {
+  const botId = client.user?.id;
+
+  // 왜 반응하지 않았는지 추적하기 위한 진단 로그 (LOG_LEVEL=debug 에서만 출력)
+  log.debug(
+    `MessageCreate ch=${message.channelId} thread=${message.channel.isThread()} ` +
+      `author=${message.author.id} bot=${message.author.bot} ` +
+      `허용유저=${config.access.userIds.has(message.author.id)} ` +
+      `멘션=${botId ? message.mentions.users.has(botId) : '?'} ` +
+      `역할멘션=${botId ? message.mentions.roles.size > 0 : '?'} ` +
+      `content="${message.content.slice(0, 60)}"`,
+  );
+
   if (message.author.bot || message.system) return;
   if (!message.inGuild()) return;
   if (!config.access.userIds.has(message.author.id)) return;
 
-  const botId = client.user?.id;
   if (!botId) return;
-  const mentioned = message.mentions.users.has(botId);
+  const mentioned = isBotMentioned(message, botId);
   const channel = message.channel;
 
   // ── 스레드 안 ────────────────────────────────────────────────────────────
@@ -166,6 +177,26 @@ async function onMessage(message: Message): Promise<void> {
 
 function isChannelAllowed(channelId: string): boolean {
   return config.access.channelIds.size === 0 || config.access.channelIds.has(channelId);
+}
+
+/**
+ * 봇이 멘션되었는지 판정합니다.
+ * `mentions.users` 만으로는 놓치는 경우가 있어서 세 가지를 모두 봅니다.
+ *  - 직접 멘션: <@id>
+ *  - 봇의 관리형 역할 멘션: <@&roleId>
+ *  - 봇 메시지에 대한 답장(Discord 가 멘션 칩으로 표시)
+ */
+function isBotMentioned(message: Message, botId: string): boolean {
+  if (message.mentions.users.has(botId)) return true;
+  if (message.content.includes(`<@${botId}>`) || message.content.includes(`<@!${botId}>`)) return true;
+
+  const botMember = message.guild?.members.me;
+  if (botMember && message.mentions.roles.some((role) => botMember.roles.cache.has(role.id))) {
+    return true;
+  }
+
+  if (message.mentions.repliedUser?.id === botId) return true;
+  return false;
 }
 
 /** 멘션을 제거하고 첨부 파일 정보를 덧붙인 프롬프트를 만듭니다. */

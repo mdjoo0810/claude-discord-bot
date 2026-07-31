@@ -20,8 +20,11 @@ fi
 
 mkdir -p "$PROJECT_DIR/logs" "$HOME/Library/LaunchAgents"
 
-# 로그인 셸(-l)로 실행해 nvm 등 PATH 설정을 그대로 사용합니다.
-# 이렇게 하면 node 버전을 올려도 plist 를 다시 만들 필요가 없습니다.
+# nvm 을 명시적으로 로드한 뒤 node 를 실행합니다.
+# zsh -l 은 .zprofile/.zlogin 만 읽고 .zshrc 는 읽지 않습니다(비대화형이라서).
+# nvm 초기화가 .zshrc 에 있으므로 -lc 만으로는 launchd 의 빈 PATH 에서
+# `command not found: node` 로 exit 127 이 납니다.
+# nvm.sh 를 직접 source 하면 node 버전을 올려도 plist 를 다시 만들 필요가 없습니다.
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -34,7 +37,7 @@ cat > "$PLIST" <<PLIST_EOF
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd "$PROJECT_DIR" &amp;&amp; exec node node_modules/tsx/dist/cli.mjs src/index.ts</string>
+    <string>export NVM_DIR="\$HOME/.nvm"; [ -s "\$NVM_DIR/nvm.sh" ] &amp;&amp; . "\$NVM_DIR/nvm.sh"; cd "$PROJECT_DIR" &amp;&amp; exec node node_modules/tsx/dist/cli.mjs src/index.ts</string>
   </array>
 
   <key>WorkingDirectory</key>
