@@ -2,6 +2,7 @@ import { query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent
 import type { ThreadChannel } from 'discord.js';
 import { config } from './config.js';
 import { store, type ThreadRecord } from './db.js';
+import { authErrorNotice, isAuthError } from './health.js';
 import { log } from './log.js';
 import { recordRateLimit, SessionMeter } from './meter.js';
 import { createCanUseTool } from './permissions.js';
@@ -124,6 +125,13 @@ export async function runTurn({ thread, record, prompt, userId }: RunParams): Pr
         }
 
         case 'assistant': {
+          // SDK 는 인증 실패를 assistant 메시지의 error 필드로도 알려줍니다.
+          const assistantError = (message as { error?: string }).error;
+          if (assistantError && isAuthError(assistantError)) {
+            errorText = `Claude 인증 만료: ${assistantError}`;
+            abort.abort();
+            break;
+          }
           turns += 1;
           presenter.setTurns(turns);
           meter.recordUsage((message as { message?: { usage?: unknown } }).message?.usage);
@@ -179,10 +187,13 @@ export async function runTurn({ thread, record, prompt, userId }: RunParams): Pr
     activeRuns.delete(record.thread_id);
   }
 
-  const aborted = abort.signal.aborted;
+  // 인증 만료는 사용자가 직접 로그인해야 풀리므로 별도로 취급합니다.
+  // (자체적으로 abort 를 걸기 때문에 'aborted' 로 오분류되지 않게 먼저 판정합니다.)
+  const authExpired = isAuthError(errorText);
+  const aborted = abort.signal.aborted && !authExpired;
 
   // result.result 가 마지막 assistant 텍스트와 같으면 중복 출력하지 않습니다.
-  if (!aborted && finalText.trim() && finalText.trim() !== presenter.lastText()) {
+  if (!aborted && !authExpired && finalText.trim() && finalText.trim() !== presenter.lastText()) {
     await presenter.postAssistantText(finalText);
   }
 
@@ -192,11 +203,17 @@ export async function runTurn({ thread, record, prompt, userId }: RunParams): Pr
 
   const status: 'ok' | 'error' | 'aborted' = aborted ? 'aborted' : errorText ? 'error' : 'ok';
 
+  if (authExpired) {
+    log.error('Claude 인증 만료 — 맥에서 `claude` 로그인이 필요합니다.');
+    await presenter.postNotice(authErrorNotice());
+  }
+
   await presenter.finish({
     status,
     ...(costUsd !== undefined ? { costUsd } : {}),
     numTurns: turns,
-    ...(errorText ? { errorText } : {}),
+    // 인증 만료는 위에서 안내했으므로 원문 스택을 또 붙이지 않습니다.
+    ...(errorText && !authExpired ? { errorText } : {}),
   });
 
   store.finishRun({

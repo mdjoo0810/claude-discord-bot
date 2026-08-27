@@ -20,6 +20,7 @@ const { decide } = await import('../src/policy.js');
 const { isInsideProject } = await import('../src/projects.js');
 const { parseUsage } = await import('../src/usage.js');
 const { SessionMeter, recordRateLimit } = await import('../src/meter.js');
+const { isAuthError } = await import('../src/health.js');
 
 let passed = 0;
 function check(name: string, fn: () => void): void {
@@ -154,5 +155,23 @@ check('상태줄 렌더', () => {
   assert.ok(line.includes('42%'), line);
   assert.ok(line.includes('5h'), line);
 });
+
+console.log('health.isAuthError');
+check('실제로 겪은 run#98 에러를 인식', () =>
+  assert.equal(
+    isAuthError(
+      'Error: Claude Code returned an error result: Failed to authenticate: ' +
+        'OAuth session expired and could not be refreshed',
+    ),
+    true,
+  ));
+check('authentication_failed 인식', () => assert.equal(isAuthError('authentication_failed'), true));
+check('invalid api key 인식', () => assert.equal(isAuthError('invalid_api_key'), true));
+check('일반 에러는 오탐 없음', () => {
+  assert.equal(isAuthError('ENOENT: no such file or directory'), false);
+  assert.equal(isAuthError('최대 턴 수(200)에 도달했습니다.'), false);
+  assert.equal(isAuthError('사용자가 이 작업을 거부했습니다.'), false);
+});
+check('undefined 안전', () => assert.equal(isAuthError(undefined), false));
 
 console.log(`\n${passed}개 통과${process.exitCode ? ' — 실패 있음' : ''}`);

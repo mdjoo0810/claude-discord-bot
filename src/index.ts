@@ -11,6 +11,7 @@ import {
 import { assertConfigSane, config } from './config.js';
 import { dispatch, ensureThreadRegistered, handleAutocomplete, handleCommand } from './commands.js';
 import { closeDb, store } from './db.js';
+import { installHealthWatch } from './health.js';
 import { truncate } from './format.js';
 import { log } from './log.js';
 import { listProjects, resolveProject, type Project } from './projects.js';
@@ -27,6 +28,15 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
   partials: [Partials.Channel],
+});
+
+// 게이트웨이가 끊긴 채 프로세스만 살아 있는 상태를 막습니다.
+installHealthWatch(client, {
+  onFatal: () => {
+    stopAllRuns();
+    store.markOrphanRuns();
+    closeDb();
+  },
 });
 
 client.once(Events.ClientReady, (ready) => {
