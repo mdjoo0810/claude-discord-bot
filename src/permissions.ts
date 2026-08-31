@@ -47,7 +47,7 @@ export function createCanUseTool(ctx: PermissionContext): CanUseTool {
       return { behavior: 'deny', message: `호스트 정책에 의해 차단되었습니다: ${decision.reason}` };
     }
 
-    if (ctx.rules.has(decision.rule)) {
+    if (decision.rules.length > 0 && decision.rules.every((rule) => ctx.rules.has(rule))) {
       return { behavior: 'allow', updatedInput: input };
     }
 
@@ -114,8 +114,10 @@ async function askUser(
 
     if (action === 'allow' || action === 'always') {
       if (action === 'always') {
-        ctx.rules.add(decision.rule);
-        store.addRule(ctx.threadId, decision.rule);
+        for (const rule of decision.rules) {
+          ctx.rules.add(rule);
+          store.addRule(ctx.threadId, rule);
+        }
       }
       // 결정 후에는 한 줄만 남깁니다.
       await interaction.update({

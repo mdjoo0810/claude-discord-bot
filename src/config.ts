@@ -102,6 +102,8 @@ export const config = {
     maxConcurrentRuns: int('MAX_CONCURRENT_RUNS', 3),
     approvalTimeoutMs: int('APPROVAL_TIMEOUT_MS', 10 * 60 * 1000),
     requireMentionInThread: bool('REQUIRE_MENTION_IN_THREAD', true),
+    /** 새 스레드를 자동 승인 상태로 시작합니다. /code 의 auto 옵션으로 매번 덮어쓸 수 있습니다. */
+    autoApproveDefault: bool('AUTO_APPROVE_DEFAULT', false),
     /** status: 진행/완료 메시지에만 · all: 모든 답변 메시지 하단에도 · off: 표시 안 함 */
     statusLine: statusLineMode(),
     dbPath: path.resolve(optional('DB_PATH') ?? './data/bot.db'),

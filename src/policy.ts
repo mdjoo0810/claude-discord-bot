@@ -4,7 +4,7 @@ import { isInsideProject } from './projects.js';
 
 export type Decision =
   | { action: 'allow'; reason: string }
-  | { action: 'ask'; reason: string; rule: string; ruleLabel: string }
+  | { action: 'ask'; reason: string; rules: string[]; ruleLabel: string }
   | { action: 'deny'; reason: string };
 
 export interface PolicyContext {
@@ -59,10 +59,64 @@ function isSensitive(target: string): boolean {
   return SENSITIVE_PATHS.some((p) => abs === p || abs.startsWith(p + path.sep));
 }
 
-function firstWord(command: string): string {
-  const cleaned = command.trim().replace(/^\(+/, '');
-  const token = cleaned.split(/\s+/)[0] ?? '';
-  return token.replace(/[^\w.\-/]/g, '');
+/** 명령 앞에 붙는 래퍼 — 실제로 실행되는 건 그 뒤쪽입니다. */
+const COMMAND_PREFIXES = new Set(['env', 'command', 'exec', 'time', 'nohup', 'nice', 'builtin']);
+/**
+ * 이 키워드로 시작하는 구획은 조건절·반복 헤더라 실행 바이너리가 없습니다.
+ * (`for f in *` 의 `f` 를 명령으로 오인하지 않도록 구획 전체를 건너뜁니다.)
+ */
+const CONTROL_HEADS = new Set(['if', 'elif', 'for', 'while', 'until', 'case', 'function', 'select']);
+/** 구획 안에서 만나면 건너뛰는 키워드. 실제 명령은 그 뒤에 옵니다. */
+const SHELL_KEYWORDS = new Set([
+  'then', 'else', 'fi', 'do', 'done', 'esac', 'return',
+  'in', 'set', 'unset', 'export', 'local', 'declare', 'readonly',
+]);
+
+/** VAR=value 형태의 환경변수 지정인지 판단합니다. 값에 비밀번호가 들어올 수 있습니다. */
+function isEnvAssignment(token: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+}
+
+/** 한 구획(파이프·&& 로 나뉜 조각)에서 실제로 실행되는 바이너리 이름을 뽑습니다. */
+function binaryOf(segment: string): string {
+  const tokens = segment
+    .trim()
+    .replace(/^[({\s]+/, '')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  // 제어 구문 헤더는 통째로 건너뜁니다.
+  const head = tokens[0]?.replace(/^["']|["']$/g, '');
+  if (head && CONTROL_HEADS.has(head)) return '';
+
+  for (const raw of tokens) {
+    const token = raw.replace(/^["']|["']$/g, '');
+    if (!token) continue;
+    // VAR=value 는 건너뜁니다. 예전에는 이걸 이름으로 써서 비밀번호가
+    // 규칙에 그대로 저장되고, 값이 매번 달라 규칙이 재사용되지 않았습니다.
+    if (isEnvAssignment(token)) continue;
+    if (COMMAND_PREFIXES.has(token)) continue;
+    if (SHELL_KEYWORDS.has(token)) continue;
+    if (token.startsWith('-')) continue;
+
+    // 경로는 유지하되(./deploy.sh 와 deploy.sh 를 구분), 셸 메타문자는 제거합니다.
+    const name = token.replace(/[^\w.\-/]/g, '');
+    if (!name || /^\d+$/.test(name)) continue;
+    return name;
+  }
+  return '';
+}
+
+/**
+ * 명령에 등장하는 모든 바이너리를 반환합니다.
+ *
+ * `cd /x && rm -rf /y` 처럼 여러 명령이 이어진 경우 앞의 것만 보면
+ * `cd` 승인 하나로 뒤의 임의 명령까지 통과합니다. 그래서 전부 확인합니다.
+ */
+export function commandBinaries(command: string): string[] {
+  const segments = command.split(/\|\||&&|[;|\n]|\$\(|`/);
+  const names = segments.map(binaryOf).filter(Boolean);
+  return [...new Set(names)];
 }
 
 function targetPath(toolName: string, input: Record<string, unknown>): string | undefined {
@@ -110,45 +164,52 @@ export function decide(
     if (target && isInsideProject(ctx.projectDir, target)) {
       return { action: 'allow', reason: '프로젝트 내부 파일 편집' };
     }
-    const rule = `${toolName}:outside`;
     return {
       action: 'ask',
       reason: '프로젝트 디렉터리 밖의 파일을 수정하려고 합니다.',
-      rule,
+      rules: [`${toolName}:outside`],
       ruleLabel: `이 스레드에서 ${toolName} 의 프로젝트 밖 수정 허용`,
     };
   }
 
-  // 5. 셸 명령 — 명령어 단위로 기억합니다.
+  // 5. 셸 명령 — 명령어 단위로 기억하되, 한 줄에 여러 명령이 있으면 전부 확인합니다.
   if (toolName === 'Bash') {
     const command = typeof input['command'] === 'string' ? input['command'] : '';
-    const bin = firstWord(command);
-    const rule = `Bash:${bin}`;
-    if (bin && ctx.rules.has(rule)) {
-      return { action: 'allow', reason: `이 스레드에서 \`${bin}\` 허용됨` };
+    const binaries = commandBinaries(command);
+
+    if (binaries.length > 0 && binaries.every((bin) => ctx.rules.has(`Bash:${bin}`))) {
+      return { action: 'allow', reason: `이 스레드에서 \`${binaries.join('`, `')}\` 허용됨` };
     }
+
+    // 승인 시 저장할 규칙은 아직 허용되지 않은 것들입니다.
+    const pending = binaries.filter((bin) => !ctx.rules.has(`Bash:${bin}`));
     return {
       action: 'ask',
       reason: '셸 명령 실행',
-      rule,
-      ruleLabel: bin ? `이 스레드에서 \`${bin}\` 명령 항상 허용` : '이 스레드에서 항상 허용',
+      rules: pending.map((bin) => `Bash:${bin}`),
+      ruleLabel: pending.length
+        ? `이 스레드에서 \`${pending.join('`, `')}\` 항상 허용`
+        : '이 스레드에서 항상 허용',
     };
   }
 
   // 6. 그 외(MCP 도구, WebFetch 등) — 도구 단위로 기억합니다.
-  const rule = `Tool:${toolName}`;
-  if (ctx.rules.has(rule)) {
+  if (ctx.rules.has(`Tool:${toolName}`)) {
     return { action: 'allow', reason: `이 스레드에서 ${toolName} 허용됨` };
   }
   return {
     action: 'ask',
     reason: '사전 승인되지 않은 도구',
-    rule,
+    rules: [`Tool:${toolName}`],
     ruleLabel: `이 스레드에서 ${toolName} 항상 허용`,
   };
 }
 
 /** 프로젝트 밖 쓰기 규칙이 저장돼 있으면 4번 단계에서도 통과시킵니다. */
 export function ruleAllows(rules: Set<string>, decision: Decision): boolean {
-  return decision.action === 'ask' && rules.has(decision.rule);
+  return (
+    decision.action === 'ask' &&
+    decision.rules.length > 0 &&
+    decision.rules.every((rule) => rules.has(rule))
+  );
 }

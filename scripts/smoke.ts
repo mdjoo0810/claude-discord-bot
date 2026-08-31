@@ -16,7 +16,7 @@ process.env['LOG_LEVEL'] ||= 'error';
 process.env['DB_PATH'] ||= '/tmp/claude-discord-bot-smoke.db';
 
 const { chunkText, describeTool, truncate } = await import('../src/format.js');
-const { decide } = await import('../src/policy.js');
+const { decide, commandBinaries } = await import('../src/policy.js');
 const { isInsideProject } = await import('../src/projects.js');
 const { parseUsage } = await import('../src/usage.js');
 const { SessionMeter, recordRateLimit } = await import('../src/meter.js');
@@ -103,6 +103,39 @@ check('자동 승인 모드에서도 하드 차단은 유지', () => {
   const auto = { ...ctx, autoApprove: true };
   assert.equal(decide('Bash', { command: 'sudo reboot' }, auto).action, 'deny');
   assert.equal(decide('Bash', { command: 'npm test' }, auto).action, 'allow');
+});
+
+console.log('policy.commandBinaries — 규칙 키 추출');
+check('환경변수 접두사를 건너뜀 (비밀번호 저장 방지)', () => {
+  assert.deepEqual(commandBinaries('MYSQL_PWD=hunter2 mysql -e "select 1"'), ['mysql']);
+  assert.deepEqual(commandBinaries('API_KEY=AIzaSyABC curl https://x'), ['curl']);
+});
+check('복합 명령의 모든 바이너리를 반환', () => {
+  assert.deepEqual(commandBinaries('cd /x && npm test'), ['cd', 'npm']);
+  assert.deepEqual(commandBinaries('cat a | grep b | wc -l'), ['cat', 'grep', 'wc']);
+});
+check('경로형 실행 파일 유지', () =>
+  assert.deepEqual(commandBinaries('./deploy.sh web stage'), ['./deploy.sh']));
+check('셸 키워드 건너뜀', () =>
+  assert.deepEqual(commandBinaries('for f in *; do echo $f; done'), ['echo']));
+check('env 래퍼 건너뜀', () =>
+  assert.deepEqual(commandBinaries('env FOO=1 node app.js'), ['node']));
+
+console.log('policy — 복합 명령 승인');
+check('cd 만 허용돼도 뒤 명령은 승인 필요', () => {
+  const ctx2 = { projectDir: proj, autoApprove: false, rules: new Set(['Bash:cd']) };
+  assert.equal(decide('Bash', { command: 'cd /x && rm -rf /y' }, ctx2).action, 'ask');
+});
+check('구성 명령이 전부 허용되면 통과', () => {
+  const ctx2 = { projectDir: proj, autoApprove: false, rules: new Set(['Bash:cd', 'Bash:npm']) };
+  assert.equal(decide('Bash', { command: 'cd /x && npm test' }, ctx2).action, 'allow');
+});
+check('승인 시 저장할 규칙에 비밀번호가 없음', () => {
+  const d = decide('Bash', { command: 'MYSQL_PWD=secret mysql -e "x"' }, ctx);
+  assert.equal(d.action, 'ask');
+  if (d.action !== 'ask') return;
+  assert.deepEqual(d.rules, ['Bash:mysql']);
+  assert.ok(!d.rules.some((r) => r.includes('secret')));
 });
 
 console.log('describeTool / truncate');

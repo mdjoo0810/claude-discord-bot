@@ -29,6 +29,12 @@ export const commandDefinitions = [
         .setDescription('작업할 프로젝트 (생략 시 기본 프로젝트)')
         .setRequired(false)
         .setAutocomplete(true),
+    )
+    .addBooleanOption((o) =>
+      o
+        .setName('auto')
+        .setDescription('승인 버튼 없이 자동 실행 (하드 차단 규칙은 계속 적용)')
+        .setRequired(false),
     ),
   new SlashCommandBuilder().setName('stop').setDescription('이 스레드에서 실행 중인 작업을 중단합니다'),
   new SlashCommandBuilder().setName('status').setDescription('이 스레드의 세션 상태와 사용량을 봅니다'),
@@ -84,6 +90,7 @@ export async function handleCommand(interaction: ChatInputCommandInteraction): P
 async function handleCode(interaction: ChatInputCommandInteraction): Promise<void> {
   const task = interaction.options.getString('task', true);
   const requested = interaction.options.getString('project') ?? config.defaultProject;
+  const auto = interaction.options.getBoolean('auto') ?? config.runtime.autoApproveDefault;
 
   if (!requested) {
     const names = listProjects().map((p) => `\`${p.name}\``).join(', ') || '(없음)';
@@ -111,8 +118,10 @@ async function handleCode(interaction: ChatInputCommandInteraction): Promise<voi
   // 이미 스레드 안이라면 그 스레드를 그대로 사용합니다.
   if (channel.isThread()) {
     await interaction.deferReply();
-    ensureThreadRegistered(channel, interaction.user.id, project.name, project.dir);
-    await interaction.editReply(`▶️ \`${project.name}\` 에서 이어서 실행합니다.`);
+    ensureThreadRegistered(channel, interaction.user.id, project.name, project.dir, auto);
+    await interaction.editReply(
+      `▶️ \`${project.name}\` 에서 이어서 실행합니다.${auto ? ' · ⚡ 자동 승인' : ''}`,
+    );
     void dispatch(channel, interaction.user.id, task);
     return;
   }
@@ -124,7 +133,7 @@ async function handleCode(interaction: ChatInputCommandInteraction): Promise<voi
 
   await interaction.deferReply();
   const starter = (await interaction.editReply(
-    `🧵 \`${project.name}\` 세션을 시작합니다.\n> ${truncate(task, 300)}`,
+    `🧵 \`${project.name}\` 세션을 시작합니다.${auto ? ' · ⚡ 자동 승인' : ''}\n> ${truncate(task, 300)}`,
   )) as Message;
 
   let thread: ThreadChannel;
@@ -146,7 +155,15 @@ async function handleCode(interaction: ChatInputCommandInteraction): Promise<voi
     ownerId: interaction.user.id,
     project: project.name,
     cwd: project.dir,
+    autoApprove: auto,
   });
+
+  if (auto) {
+    await thread.send(
+      '⚡ **자동 승인 모드** — 셸 명령과 파일 수정을 확인 없이 실행합니다. ' +
+        '`/auto enabled:false` 로 끌 수 있습니다.',
+    );
+  }
 
   void dispatch(thread, interaction.user.id, task);
 }
@@ -247,6 +264,7 @@ export function ensureThreadRegistered(
   ownerId: string,
   project: string,
   cwd: string,
+  autoApprove?: boolean,
 ): void {
   store.createThread({
     threadId: thread.id,
@@ -255,6 +273,7 @@ export function ensureThreadRegistered(
     ownerId,
     project,
     cwd,
+    ...(autoApprove === undefined ? {} : { autoApprove }),
   });
 }
 

@@ -72,8 +72,12 @@ const stmts = {
   getThread: db.prepare<[string], ThreadRecord>('SELECT * FROM threads WHERE thread_id = ?'),
   insertThread: db.prepare(
     `INSERT INTO threads (thread_id, channel_id, guild_id, owner_id, project, cwd, session_id, auto_approve, created_at, updated_at)
-     VALUES (@thread_id, @channel_id, @guild_id, @owner_id, @project, @cwd, NULL, 0, @now, @now)
-     ON CONFLICT(thread_id) DO UPDATE SET project = excluded.project, cwd = excluded.cwd, updated_at = excluded.updated_at`,
+     VALUES (@thread_id, @channel_id, @guild_id, @owner_id, @project, @cwd, NULL,
+             COALESCE(@auto_approve, 0), @now, @now)
+     ON CONFLICT(thread_id) DO UPDATE SET project = excluded.project, cwd = excluded.cwd,
+       -- 명시적으로 지정했을 때만 덮어씁니다. 그렇지 않으면 /auto 설정이 유지됩니다.
+       auto_approve = COALESCE(@auto_approve, threads.auto_approve),
+       updated_at = excluded.updated_at`,
   ),
   setSession: db.prepare('UPDATE threads SET session_id = ?, updated_at = ? WHERE thread_id = ?'),
   setAutoApprove: db.prepare('UPDATE threads SET auto_approve = ?, updated_at = ? WHERE thread_id = ?'),
@@ -119,6 +123,7 @@ export const store = {
     ownerId: string;
     project: string;
     cwd: string;
+    autoApprove?: boolean;
   }): void {
     stmts.insertThread.run({
       thread_id: input.threadId,
@@ -127,6 +132,7 @@ export const store = {
       owner_id: input.ownerId,
       project: input.project,
       cwd: input.cwd,
+      auto_approve: input.autoApprove === undefined ? null : input.autoApprove ? 1 : 0,
       now: Date.now(),
     });
   },
